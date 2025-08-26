@@ -5,15 +5,14 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import io
-import base64
 from datetime import datetime
 import math
 from typing import Tuple, List, Dict
-import json
+import re
 
 # Configuration de la page
 st.set_page_config(
-    page_title="Analyseur d'Intervalles Minéralisés 3D",
+    page_title="Analyseur d'Intervalles Minéralisés",
     page_icon="⛏️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -60,6 +59,13 @@ st.markdown("""
         border-left: 4px solid #ef4444;
         margin: 1rem 0;
     }
+    .info-box {
+        background: #dbeafe;
+        padding: 1rem;
+        border-radius: 8px;
+        border-left: 4px solid #3b82f6;
+        margin: 1rem 0;
+    }
     .stTabs [data-baseweb="tab-list"] {
         gap: 4px;
     }
@@ -78,168 +84,400 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ===============================================================================
-# FONCTIONS UTILITAIRES
+# FONCTIONS DE CALCUL GÉOLOGIQUE
 # ===============================================================================
 
 @st.cache_data
 def calculate_distance_to_shear(easting: float, northing: float, elevation: float) -> float:
-    """Calcule la distance perpendiculaire à la shear zone planaire"""
+    """
+    Calcule la distance perpendiculaire d'un point à la shear zone planaire
+    
+    Paramètres shear zone:
+    - Strike: N45°E (azimut 045°)
+    - Dip: 75° vers SE
+    - Centre: E450000, N5550000, Z150m
+    """
     # Paramètres de la shear zone
     center_easting = 450000
     center_northing = 5550000
-    center_depth = 100
-    strike_azimuth = 45  # N45°E
-    dip_angle = 75  # 75° SE
+    center_depth = 100  # Profondeur du centre
+    strike_azimuth = 45  # Degrés
+    dip_angle = 75  # Degrés
     
     # Conversion en radians
     strike_rad = math.radians(strike_azimuth)
     dip_rad = math.radians(dip_angle)
     
-    # Vecteur normal au plan
+    # Vecteur normal au plan de la shear zone
     normal_x = math.cos(strike_rad) * math.sin(dip_rad)
     normal_y = -math.sin(strike_rad) * math.sin(dip_rad)
     normal_z = math.cos(dip_rad)
     
-    # Point de référence
+    # Point de référence sur le plan
     ref_x = center_easting
     ref_y = center_northing
-    ref_z = 250 - center_depth
+    ref_z = 250 - center_depth  # Convention: élévation = 250 - profondeur
     
-    # Distance perpendiculaire
+    # Vecteur du point de référence au point testé
     dx = easting - ref_x
     dy = northing - ref_y
     dz = elevation - ref_z
     
+    # Distance perpendiculaire au plan
     distance = abs(dx * normal_x + dy * normal_y + dz * normal_z)
+    
     return distance
+
+def generate_grade_from_distance(distance: float) -> float:
+    """Génère une teneur basée sur la distance à la shear zone"""
+    
+    # Grade de base très faible
+    base_grade = 0.01 + np.random.random() * 0.05
+    
+    if distance < 20:  # Zone d'influence
+        proximity_factor = max(0, (20 - distance) / 20)
+        
+        if distance < 5:  # Très proche: hautes teneurs
+            grade = 0.5 + np.random.random() * 3.0 * proximity_factor
+            if np.random.random() < 0.2:  # 20% de valeurs exceptionnelles
+                grade += np.random.random() * 5
+        elif distance < 10:  # Proche: teneurs modérées
+            grade = 0.2 + np.random.random() * 1.5 * proximity_factor
+            if np.random.random() < 0.3:
+                grade += np.random.random() * 2
+        else:  # Zone d'influence
+            grade = 0.1 + np.random.random() * 0.8 * proximity_factor
+    else:
+        grade = base_grade
+    
+    # Quelques anomalies dispersées (5%)
+    if np.random.random() < 0.05:
+        grade = 0.3 + np.random.random() * 1.0
+    
+    return grade
 
 @st.cache_data
 def generate_demo_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Génère des données de démonstration avec positions 3D réalistes"""
+    """Génère des données de démonstration optimisées - 100 forages, 5000+ échantillons"""
     
-    samples = []
+    # Paramètres de la shear zone
+    center_easting = 450000
+    center_northing = 5550000
+    strike_length = 800
+    dip_extent = 200
+    strike_azimuth = 45
+    center_depth = 100
+    
+    # Générer 100 forages orientés
     drillholes = []
-    holes = ['DDH-001', 'DDH-002', 'DDH-003', 'DDH-004', 'DDH-005']
-    
-    for hole_idx, hole in enumerate(holes):
-        # Position de surface du forage
-        surface_x = 450000 + (hole_idx - 2) * 100 + (np.random.random() - 0.5) * 50
-        surface_y = 5550000 + (hole_idx - 2) * 80 + (np.random.random() - 0.5) * 50
-        surface_z = 250
+    for i in range(1, 101):
+        # Position optimisée pour intercepter la shear zone
+        offset_strike = (np.random.random() - 0.5) * strike_length * 0.8
+        offset_dip = (np.random.random() - 0.5) * dip_extent * 0.8
         
-        # Orientation optimisée pour croiser la shear zone
-        azimuth = 135 + (np.random.random() - 0.5) * 30  # SE direction
-        dip = -60 + (np.random.random() - 0.5) * 20  # Plongeant
-        depth_total = 150
+        strike_rad = math.radians(strike_azimuth)
+        
+        surface_easting = center_easting + offset_strike * math.sin(strike_rad) + \
+                         (np.random.random() - 0.5) * 100
+        surface_northing = center_northing + offset_strike * math.cos(strike_rad) + \
+                          (np.random.random() - 0.5) * 100
+        
+        # Azimut optimal pour croiser la shear zone
+        optimal_azimuth = (strike_azimuth + 90) % 360
+        azimuth_variation = (np.random.random() - 0.5) * 60
         
         drillholes.append({
-            'HoleID': hole,
-            'Easting': surface_x,
-            'Northing': surface_y,
-            'Elevation': surface_z,
-            'Azimuth': azimuth,
-            'Dip': dip,
-            'TotalDepth': depth_total
+            'HoleID': f'DDH-{i:03d}',
+            'Easting': round(surface_easting, 2),
+            'Northing': round(surface_northing, 2),
+            'Elevation': round(250 + (np.random.random() - 0.5) * 50, 2),
+            'Azimuth': round(optimal_azimuth + azimuth_variation, 1),
+            'Dip': round(-60 + (np.random.random() - 0.5) * 20, 1),
+            'Depth': round(200 + np.random.random() * 200, 2)
         })
-        
-        azimuth_rad = math.radians(azimuth)
-        dip_rad = math.radians(abs(dip))
-        
-        sample_id = 1
-        for depth in range(0, depth_total, 2):
-            # Position 3D de l'échantillon
-            x = surface_x + depth * math.sin(azimuth_rad) * math.cos(dip_rad)
-            y = surface_y + depth * math.cos(azimuth_rad) * math.cos(dip_rad)
-            z = surface_z - depth * math.sin(dip_rad)
+    
+    drillholes_df = pd.DataFrame(drillholes)
+    
+    # Générer les échantillons
+    samples = []
+    sample_id = 1
+    
+    for _, hole in drillholes_df.iterrows():
+        depth = 1
+        while depth < hole['Depth']:
+            # Calculer position 3D de l'échantillon
+            azimuth_rad = math.radians(hole['Azimuth'])
+            dip_rad = math.radians(abs(hole['Dip']))
             
-            # Distance à la shear zone
-            distance = calculate_distance_to_shear(x, y, z)
+            sample_easting = hole['Easting'] + depth * math.sin(azimuth_rad) * math.cos(dip_rad)
+            sample_northing = hole['Northing'] + depth * math.cos(azimuth_rad) * math.cos(dip_rad)
+            sample_elevation = hole['Elevation'] - depth * math.sin(dip_rad)
             
-            # Génération de teneur basée sur la distance
-            grade = generate_grade_from_distance(distance)
+            # Calculer distance à la shear zone
+            distance_to_shear = calculate_distance_to_shear(
+                sample_easting, sample_northing, sample_elevation
+            )
             
-            # Zone géologique
-            if distance < 5:
+            # Générer teneur basée sur la proximité
+            grade = generate_grade_from_distance(distance_to_shear)
+            
+            # Déterminer la zone géologique
+            if distance_to_shear < 5:
                 zone = 'Shear_Zone_Core'
-            elif distance < 15:
+            elif distance_to_shear < 15:
                 zone = 'Shear_Zone_Halo'
             else:
                 zone = 'Host_Rock'
             
             samples.append({
-                'SampleID': f'{hole}-{sample_id:03d}',
-                'HoleID': hole,
+                'SampleID': f'{hole["HoleID"]}-{sample_id:04d}',
+                'HoleID': hole['HoleID'],
                 'From': depth,
                 'To': depth + 2,
                 'Length': 2.0,
                 'Au': round(grade, 3),
-                'Easting': round(x, 2),
-                'Northing': round(y, 2),
-                'Elevation': round(z, 2),
-                'DistanceToShear': round(distance, 2),
-                'Zone': zone,
-                'Azimuth': round(azimuth, 1),
-                'Dip': round(dip, 1)
+                'Easting': round(sample_easting, 2),
+                'Northing': round(sample_northing, 2),
+                'Elevation': round(sample_elevation, 2),
+                'DistanceToShear': round(distance_to_shear, 2),
+                'Zone': zone
             })
+            
+            depth += 2
             sample_id += 1
     
-    return pd.DataFrame(samples), pd.DataFrame(drillholes)
-
-def generate_grade_from_distance(distance: float) -> float:
-    """Génère une teneur basée sur la distance à la shear zone"""
-    base_grade = 0.05 + np.random.random() * 0.1
+    samples_df = pd.DataFrame(samples)
     
-    if distance < 20:
-        proximity_factor = max(0, (20 - distance) / 20)
+    return samples_df, drillholes_df
+
+# ===============================================================================
+# FONCTIONS D'ANALYSE
+# ===============================================================================
+
+def identify_potential_intervals(hole_samples: pd.DataFrame, config: Dict) -> List[Dict]:
+    """Identifie les intervalles potentiels dans un forage"""
+    
+    cutoff_grade = config['cutoff_grade']
+    max_distance = config['max_distance']
+    min_length = config['min_length']
+    min_samples = config['min_samples']
+    
+    intervals = []
+    current_interval = None
+    
+    for _, sample in hole_samples.iterrows():
+        grade = sample['Au']
+        distance = sample.get('DistanceToShear', 999)
         
-        if distance < 5:
-            grade = 0.8 + np.random.random() * 3.0 * proximity_factor
-            if np.random.random() < 0.2:
-                grade += np.random.random() * 5
-        elif distance < 10:
-            grade = 0.3 + np.random.random() * 1.5 * proximity_factor
-            if np.random.random() < 0.3:
-                grade += np.random.random() * 2
+        # Critères de sélection
+        meets_grade = grade >= cutoff_grade
+        meets_distance = distance <= max_distance
+        
+        if meets_grade and meets_distance:
+            if current_interval is None:
+                # Commencer un nouvel intervalle
+                current_interval = {
+                    'start': sample['From'],
+                    'end': sample['To'],
+                    'samples': [sample],
+                    'length': sample['Length'],
+                    'grade_sum': grade,
+                    'sample_count': 1,
+                    'max_grade': grade,
+                    'min_grade': grade,
+                    'distance_sum': distance,
+                    'max_distance': distance,
+                    'min_distance': distance
+                }
+            else:
+                # Vérifier la continuité (gap max 4m)
+                gap = sample['From'] - current_interval['end']
+                if gap <= 4:
+                    # Étendre l'intervalle
+                    current_interval['end'] = sample['To']
+                    current_interval['samples'].append(sample)
+                    current_interval['length'] += sample['Length']
+                    current_interval['grade_sum'] += grade
+                    current_interval['sample_count'] += 1
+                    current_interval['max_grade'] = max(current_interval['max_grade'], grade)
+                    current_interval['min_grade'] = min(current_interval['min_grade'], grade)
+                    current_interval['distance_sum'] += distance
+                    current_interval['max_distance'] = max(current_interval['max_distance'], distance)
+                    current_interval['min_distance'] = min(current_interval['min_distance'], distance)
+                else:
+                    # Finaliser l'intervalle précédent
+                    if (current_interval['length'] >= min_length and 
+                        current_interval['sample_count'] >= min_samples):
+                        intervals.append(finalize_interval(current_interval))
+                    
+                    # Commencer un nouvel intervalle
+                    current_interval = {
+                        'start': sample['From'],
+                        'end': sample['To'],
+                        'samples': [sample],
+                        'length': sample['Length'],
+                        'grade_sum': grade,
+                        'sample_count': 1,
+                        'max_grade': grade,
+                        'min_grade': grade,
+                        'distance_sum': distance,
+                        'max_distance': distance,
+                        'min_distance': distance
+                    }
         else:
-            grade = 0.1 + np.random.random() * 0.8 * proximity_factor
-    else:
-        grade = base_grade
+            # Finaliser l'intervalle en cours si valide
+            if (current_interval and 
+                current_interval['length'] >= min_length and 
+                current_interval['sample_count'] >= min_samples):
+                intervals.append(finalize_interval(current_interval))
+            current_interval = None
     
-    # Quelques anomalies dispersées
-    if np.random.random() < 0.05:
-        grade = 0.5 + np.random.random() * 2.0
+    # Traiter le dernier intervalle
+    if (current_interval and 
+        current_interval['length'] >= min_length and 
+        current_interval['sample_count'] >= min_samples):
+        intervals.append(finalize_interval(current_interval))
     
-    return grade
+    return intervals
 
-@st.cache_data
-def generate_shear_zone_mesh():
-    """Génère le mesh de la shear zone"""
-    mesh_points = []
-    center_x = 450000
-    center_y = 5550000
-    center_z = 150
-    strike = 45
-    dip = 75
+def finalize_interval(interval_data: Dict) -> Dict:
+    """Finalise un intervalle avec calculs des moyennes"""
     
-    strike_rad = math.radians(strike)
-    dip_rad = math.radians(dip)
+    return {
+        'start': interval_data['start'],
+        'end': interval_data['end'],
+        'length': interval_data['length'],
+        'avg_grade': interval_data['grade_sum'] / interval_data['sample_count'],
+        'max_grade': interval_data['max_grade'],
+        'min_grade': interval_data['min_grade'],
+        'sample_count': interval_data['sample_count'],
+        'avg_distance': interval_data['distance_sum'] / interval_data['sample_count'],
+        'min_distance': interval_data['min_distance'],
+        'max_distance': interval_data['max_distance']
+    }
+
+def calculate_mineral_intervals(samples_df: pd.DataFrame, config: Dict) -> pd.DataFrame:
+    """Calcule les intervalles minéralisés selon les critères"""
     
-    # Générer des points sur le plan de la shear zone
-    for i in range(-400, 401, 20):
-        for j in range(0, 201, 10):
-            # Position sur le plan local
-            x = center_x + i * math.sin(strike_rad) + j * math.cos(strike_rad) * math.cos(dip_rad)
-            y = center_y + i * math.cos(strike_rad) - j * math.sin(strike_rad) * math.cos(dip_rad)
-            z = center_z - j * math.sin(dip_rad)
-            
-            mesh_points.append({
-                'X': x,
-                'Y': y, 
-                'Z': z,
-                'Type': 'Shear_Zone'
+    intervals = []
+    interval_id = 1
+    
+    for hole_id, hole_samples in samples_df.groupby('HoleID'):
+        hole_samples = hole_samples.sort_values('From')
+        
+        # Identifier les intervalles potentiels
+        potential_intervals = identify_potential_intervals(hole_samples, config)
+        
+        for interval in potential_intervals:
+            intervals.append({
+                'IntervalID': interval_id,
+                'HoleID': hole_id,
+                'From': interval['start'],
+                'To': interval['end'],
+                'Length': interval['length'],
+                'AvgGrade': interval['avg_grade'],
+                'MaxGrade': interval['max_grade'],
+                'MinGrade': interval['min_grade'],
+                'SampleCount': interval['sample_count'],
+                'GradeXLength': interval['avg_grade'] * interval['length'],
+                'AvgDistance': interval.get('avg_distance', 0),
+                'MinDistance': interval.get('min_distance', 0),
+                'MaxDistance': interval.get('max_distance', 0),
+                'IntervalsBefore': 1,
+                'IntervalsAfter': 1,
+                'DilutedLength': 0.0,
+                'Note': ''
             })
+            interval_id += 1
     
-    return pd.DataFrame(mesh_points)
+    return pd.DataFrame(intervals)
+
+def apply_dilution_constraints(intervals_df: pd.DataFrame, samples_df: pd.DataFrame, 
+                             max_dilution: float) -> pd.DataFrame:
+    """Applique les contraintes de dilution pour regrouper les intervalles"""
+    
+    final_intervals = []
+    
+    # Grouper les intervalles par forage
+    for hole_id, hole_intervals in intervals_df.groupby('HoleID'):
+        hole_intervals = hole_intervals.sort_values('From')
+        
+        if len(hole_intervals) == 1:
+            # Un seul intervalle: le garder tel quel
+            interval = hole_intervals.iloc[0].copy()
+            interval['IntervalsBefore'] = 1
+            interval['IntervalsAfter'] = 1
+            final_intervals.append(interval)
+        else:
+            # Multiples intervalles: appliquer la logique de regroupement
+            merged_interval = apply_merging_logic(
+                hole_intervals, samples_df, hole_id, max_dilution
+            )
+            final_intervals.append(merged_interval)
+    
+    return pd.DataFrame(final_intervals)
+
+def apply_merging_logic(hole_intervals: pd.DataFrame, samples_df: pd.DataFrame, 
+                       hole_id: str, max_dilution: float) -> Dict:
+    """Applique la logique de regroupement pour un forage"""
+    
+    first_interval = hole_intervals.iloc[0]
+    last_interval = hole_intervals.iloc[-1]
+    
+    # Calculer la dilution totale
+    total_span = last_interval['To'] - first_interval['From']
+    total_mineralized = hole_intervals['Length'].sum()
+    dilution = total_span - total_mineralized
+    
+    intervals_before = len(hole_intervals)
+    
+    if dilution <= max_dilution:
+        # Regrouper avec grade dilué
+        hole_samples = samples_df[samples_df['HoleID'] == hole_id]
+        span_samples = hole_samples[
+            (hole_samples['From'] >= first_interval['From']) & 
+            (hole_samples['To'] <= last_interval['To'])
+        ]
+        
+        # Calcul du grade dilué
+        diluted_grade = span_samples['Au'].mean()
+        diluted_sample_count = len(span_samples)
+        
+        return {
+            'IntervalID': first_interval['IntervalID'],
+            'HoleID': hole_id,
+            'From': first_interval['From'],
+            'To': last_interval['To'],
+            'Length': total_span,
+            'AvgGrade': diluted_grade,
+            'MaxGrade': hole_intervals['MaxGrade'].max(),
+            'MinGrade': hole_intervals['MinGrade'].min(),
+            'SampleCount': diluted_sample_count,
+            'GradeXLength': diluted_grade * total_span,
+            'AvgDistance': hole_intervals['AvgDistance'].mean(),
+            'MinDistance': hole_intervals['MinDistance'].min(),
+            'MaxDistance': hole_intervals['MaxDistance'].max(),
+            'IntervalsBefore': intervals_before,
+            'IntervalsAfter': 1,
+            'DilutedLength': dilution,
+            'Note': f'Regroupé ({intervals_before} intervalles)'
+        }
+    else:
+        # Sélectionner le meilleur intervalle
+        best_interval = hole_intervals.loc[
+            hole_intervals['GradeXLength'].idxmax()
+        ].copy()
+        
+        best_interval['IntervalsBefore'] = intervals_before
+        best_interval['IntervalsAfter'] = 1
+        best_interval['DilutedLength'] = 0.0
+        best_interval['Note'] = f'Meilleur sélectionné (dilution {dilution:.1f}m > {max_dilution}m)'
+        
+        return best_interval.to_dict()
+
+# ===============================================================================
+# FONCTIONS UTILITAIRES
+# ===============================================================================
 
 def load_csv_file(uploaded_file):
     """Charge un fichier CSV uploadé"""
@@ -247,7 +485,7 @@ def load_csv_file(uploaded_file):
         df = pd.read_csv(uploaded_file)
         return df
     except Exception as e:
-        st.error(f"Erreur lors du chargement: {str(e)}")
+        st.error(f"❌ Erreur lors du chargement: {str(e)}")
         return None
 
 def auto_detect_columns(df):
@@ -298,207 +536,52 @@ def validate_data(df, mapping):
     
     return errors
 
-def run_mineral_analysis(df, mapping, config):
-    """Exécute l'analyse des intervalles minéralisés"""
+def calculate_distances_if_needed(df, mapping):
+    """Calcule les distances à la shear zone si les coordonnées sont disponibles"""
     
-    # Preparation des données
-    analysis_df = df.copy()
+    # Vérifier si les coordonnées sont disponibles
+    coord_fields = ['Easting', 'Northing', 'Elevation']
+    has_coords = all(mapping.get(field) for field in coord_fields)
     
-    # Renommer les colonnes selon le mapping
-    column_rename = {v: k for k, v in mapping.items() if v}
-    analysis_df = analysis_df.rename(columns=column_rename)
-    
-    # Convertir en numérique
-    numeric_cols = ['From', 'To', 'Au']
-    if 'Easting' in analysis_df.columns:
-        numeric_cols.extend(['Easting', 'Northing', 'Elevation'])
-    
-    for col in numeric_cols:
-        if col in analysis_df.columns:
-            analysis_df[col] = pd.to_numeric(analysis_df[col], errors='coerce')
-    
-    # Calculer les distances si les coordonnées sont disponibles
-    if all(col in analysis_df.columns for col in ['Easting', 'Northing', 'Elevation']):
-        analysis_df['DistanceToShear'] = analysis_df.apply(
-            lambda row: calculate_distance_to_shear(
-                row['Easting'], row['Northing'], row['Elevation']
-            ), axis=1
-        )
-    else:
-        analysis_df['DistanceToShear'] = 999  # Distance par défaut
-    
-    # Filtrer selon les critères
-    valid_samples = analysis_df[
-        (analysis_df['Au'] >= config['cutoff_grade']) &
-        (analysis_df['DistanceToShear'] <= config['max_distance'])
-    ]
-    
-    # Grouper par forage et créer les intervalles
-    intervals = []
-    interval_id = 1
-    
-    for hole_id, hole_samples in valid_samples.groupby('HoleID'):
-        hole_samples = hole_samples.sort_values('From')
+    if has_coords:
+        # Calculer les distances
+        st.info("📍 Calcul des distances à la shear zone en cours...")
         
-        if len(hole_samples) >= config['min_samples']:
-            # Créer un intervalle continu
-            from_depth = hole_samples['From'].min()
-            to_depth = hole_samples['To'].max()
-            length = to_depth - from_depth
-            
-            if length >= config['min_length']:
-                avg_grade = hole_samples['Au'].mean()
-                max_grade = hole_samples['Au'].max()
-                sample_count = len(hole_samples)
+        progress_bar = st.progress(0)
+        distances = []
+        
+        for i, row in df.iterrows():
+            try:
+                easting = float(row[mapping['Easting']])
+                northing = float(row[mapping['Northing']])
+                elevation = float(row[mapping['Elevation']])
                 
-                intervals.append({
-                    'IntervalID': interval_id,
-                    'HoleID': hole_id,
-                    'From': from_depth,
-                    'To': to_depth,
-                    'Length': round(length, 2),
-                    'AvgGrade': round(avg_grade, 3),
-                    'MaxGrade': round(max_grade, 3),
-                    'SampleCount': sample_count,
-                    'GradeXLength': round(avg_grade * length, 2),
-                    'AvgDistance': round(hole_samples['DistanceToShear'].mean(), 2)
-                })
-                interval_id += 1
-    
-    return pd.DataFrame(intervals)
-
-# ===============================================================================
-# VISUALISATIONS 3D
-# ===============================================================================
-
-def create_3d_scatter_plot(df, mapping, color_by='grade', show_mesh=True, intervals_df=None):
-    """Créer un graphique 3D avec Plotly"""
-    
-    if not all(col in mapping and mapping[col] for col in ['Easting', 'Northing', 'Elevation', 'Au']):
-        st.warning("Coordonnées 3D manquantes pour la visualisation")
-        return None
-    
-    # Préparer les données
-    plot_df = df.copy()
-    
-    # Renommer les colonnes
-    plot_df = plot_df.rename(columns={
-        mapping['Easting']: 'X',
-        mapping['Northing']: 'Y', 
-        mapping['Elevation']: 'Z',
-        mapping['Au']: 'Grade',
-        mapping['HoleID']: 'Hole'
-    })
-    
-    # Convertir en numérique
-    for col in ['X', 'Y', 'Z', 'Grade']:
-        plot_df[col] = pd.to_numeric(plot_df[col], errors='coerce')
-    
-    # Supprimer les NaN
-    plot_df = plot_df.dropna(subset=['X', 'Y', 'Z', 'Grade'])
-    
-    if plot_df.empty:
-        st.warning("Aucune donnée valide pour la visualisation 3D")
-        return None
-    
-    # Créer la figure
-    fig = go.Figure()
-    
-    # Ajouter le mesh de la shear zone si demandé
-    if show_mesh:
-        mesh_df = generate_shear_zone_mesh()
+                distance = calculate_distance_to_shear(easting, northing, elevation)
+                distances.append(distance)
+                
+                # Mise à jour de la barre de progression
+                if i % 100 == 0:
+                    progress_bar.progress(min(i / len(df), 1.0))
+                    
+            except (ValueError, TypeError):
+                distances.append(999)  # Distance par défaut si erreur
         
-        # Créer une surface mesh
-        fig.add_trace(go.Scatter3d(
-            x=mesh_df['X'],
-            y=mesh_df['Y'],
-            z=mesh_df['Z'],
-            mode='markers',
-            marker=dict(
-                size=2,
-                color='orange',
-                opacity=0.3
-            ),
-            name='Shear Zone',
-            hovertemplate='Shear Zone<br>X: %{x}<br>Y: %{y}<br>Z: %{z}<extra></extra>'
-        ))
-    
-    # Déterminer la couleur et la taille des points
-    if color_by == 'grade':
-        colors = plot_df['Grade']
-        colorscale = 'Viridis'
-        colorbar_title = 'Teneur Au (g/t)'
-    elif color_by == 'distance' and 'DistanceToShear' in plot_df.columns:
-        colors = plot_df['DistanceToShear']
-        colorscale = 'RdBu_r'
-        colorbar_title = 'Distance Shear (m)'
+        progress_bar.progress(1.0)
+        df['DistanceToShear'] = distances
+        
+        progress_bar.empty()
+        st.success(f"✅ Distances calculées pour {len(df)} échantillons")
+        
+        return df, True
     else:
-        # Couleur par forage
-        unique_holes = plot_df['Hole'].unique()
-        color_map = {hole: i for i, hole in enumerate(unique_holes)}
-        colors = plot_df['Hole'].map(color_map)
-        colorscale = 'Set3'
-        colorbar_title = 'Forage'
-    
-    # Ajouter les échantillons
-    fig.add_trace(go.Scatter3d(
-        x=plot_df['X'],
-        y=plot_df['Y'],
-        z=plot_df['Z'],
-        mode='markers',
-        marker=dict(
-            size=3 + plot_df['Grade'] * 2,  # Taille basée sur la teneur
-            color=colors,
-            colorscale=colorscale,
-            opacity=0.8,
-            colorbar=dict(title=colorbar_title),
-            line=dict(width=0.5, color='DarkSlateGrey')
-        ),
-        name='Échantillons',
-        text=plot_df['Hole'],
-        hovertemplate='Forage: %{text}<br>Teneur: %{marker.color:.3f}g/t<br>X: %{x}<br>Y: %{y}<br>Z: %{z}<extra></extra>'
-    ))
-    
-    # Ajouter les intervalles minéralisés si disponibles
-    if intervals_df is not None and not intervals_df.empty:
-        for _, interval in intervals_df.iterrows():
-            # Trouver les échantillons de cet intervalle
-            hole_samples = plot_df[
-                (plot_df['Hole'] == interval['HoleID']) &
-                (plot_df[mapping['From']] >= interval['From']) &
-                (plot_df[mapping['To']] <= interval['To'])
-            ]
-            
-            if len(hole_samples) > 1:
-                fig.add_trace(go.Scatter3d(
-                    x=hole_samples['X'],
-                    y=hole_samples['Y'],
-                    z=hole_samples['Z'],
-                    mode='lines+markers',
-                    line=dict(color='red', width=8),
-                    marker=dict(size=6, color='red'),
-                    name=f'Intervalle {interval["IntervalID"]}',
-                    hovertemplate=f'Intervalle {interval["IntervalID"]}<br>Teneur: {interval["AvgGrade"]:.3f}g/t<br>Longueur: {interval["Length"]:.1f}m<extra></extra>'
-                ))
-    
-    # Configuration de la mise en page
-    fig.update_layout(
-        title="Visualisation 3D - Échantillons et Shear Zone",
-        scene=dict(
-            xaxis_title="Easting (m)",
-            yaxis_title="Northing (m)",
-            zaxis_title="Élévation (m)",
-            camera=dict(
-                eye=dict(x=1.5, y=1.5, z=1.5)
-            ),
-            aspectmode='data'
-        ),
-        width=1000,
-        height=700,
-        margin=dict(r=20, b=10, l=10, t=40)
-    )
-    
-    return fig
+        # Pas de coordonnées - utiliser distance par défaut
+        df['DistanceToShear'] = 999
+        st.warning("⚠️ Coordonnées manquantes - distance par défaut utilisée (999m)")
+        return df, False
+
+# ===============================================================================
+# FONCTIONS DE VISUALISATION
+# ===============================================================================
 
 def create_grade_distribution_plot(df, mapping):
     """Créer un graphique de distribution des teneurs"""
@@ -510,7 +593,12 @@ def create_grade_distribution_plot(df, mapping):
     
     fig = make_subplots(
         rows=2, cols=2,
-        subplot_titles=('Histogramme des Teneurs', 'Box Plot', 'Teneurs Cumulatives', 'QQ Plot'),
+        subplot_titles=(
+            'Distribution des Teneurs Au (g/t)', 
+            'Boîte à Moustaches', 
+            'Courbe Cumulative', 
+            'Teneurs vs Distance Shear Zone'
+        ),
         specs=[[{"secondary_y": False}, {"secondary_y": False}],
                [{"secondary_y": False}, {"secondary_y": False}]]
     )
@@ -536,18 +624,25 @@ def create_grade_distribution_plot(df, mapping):
         row=2, col=1
     )
     
-    # QQ Plot (approximation)
-    theoretical_quantiles = np.linspace(0.01, 0.99, len(sorted_grades))
-    
-    fig.add_trace(
-        go.Scatter(
-            x=theoretical_quantiles, 
-            y=sorted_grades, 
-            mode='markers',
-            name='QQ Plot'
-        ),
-        row=2, col=2
-    )
+    # Teneurs vs Distance (si disponible)
+    if 'DistanceToShear' in df.columns:
+        # Échantillonner pour performance
+        sample_data = df.sample(min(1000, len(df)))
+        fig.add_trace(
+            go.Scatter(
+                x=sample_data['DistanceToShear'],
+                y=pd.to_numeric(sample_data[mapping['Au']], errors='coerce'),
+                mode='markers',
+                marker=dict(
+                    color=pd.to_numeric(sample_data[mapping['Au']], errors='coerce'),
+                    colorscale='Viridis',
+                    size=4,
+                    opacity=0.6
+                ),
+                name='Au vs Distance'
+            ),
+            row=2, col=2
+        )
     
     fig.update_layout(
         height=600,
@@ -557,67 +652,148 @@ def create_grade_distribution_plot(df, mapping):
     
     return fig
 
-def create_intervals_analysis_plot(intervals_df):
-    """Créer un graphique d'analyse des intervalles"""
+def create_distance_analysis_plot(df):
+    """Créer une analyse de la distribution des distances"""
     
-    if intervals_df is None or intervals_df.empty:
+    if 'DistanceToShear' not in df.columns:
         return None
     
     fig = make_subplots(
         rows=2, cols=2,
-        subplot_titles=('Distribution Longueurs', 'Distribution Teneurs', 'Grade vs Longueur', 'Qualité des Intervalles'),
+        subplot_titles=(
+            'Distribution des Distances à la Shear Zone',
+            'Teneurs Moyennes par Zone de Distance',
+            'Échantillons par Zone Géologique',
+            'Corrélation Distance-Teneur'
+        ),
+        specs=[[{"secondary_y": False}, {"secondary_y": False}],
+               [{"secondary_y": False}, {"secondary_y": False}]]
+    )
+    
+    distances = df['DistanceToShear'].dropna()
+    
+    # Histogramme des distances
+    fig.add_trace(
+        go.Histogram(x=distances, nbinsx=30, name='Distribution Distance', opacity=0.7),
+        row=1, col=1
+    )
+    
+    # Teneurs moyennes par zones de distance
+    distance_bins = pd.cut(distances, bins=10)
+    grade_by_distance = df.groupby(distance_bins)['Au'].agg(['mean', 'count']).reset_index()
+    grade_by_distance['distance_center'] = grade_by_distance['DistanceToShear'].apply(lambda x: x.mid)
+    
+    fig.add_trace(
+        go.Bar(
+            x=grade_by_distance['distance_center'],
+            y=grade_by_distance['mean'],
+            name='Teneur Moyenne',
+            opacity=0.8
+        ),
+        row=1, col=2
+    )
+    
+    # Échantillons par zone géologique (si disponible)
+    if 'Zone' in df.columns:
+        zone_counts = df['Zone'].value_counts()
+        fig.add_trace(
+            go.Bar(x=zone_counts.index, y=zone_counts.values, name='Échantillons par Zone'),
+            row=2, col=1
+        )
+    
+    # Corrélation distance-teneur
+    sample_data = df.sample(min(1000, len(df)))
+    fig.add_trace(
+        go.Scatter(
+            x=sample_data['DistanceToShear'],
+            y=sample_data['Au'],
+            mode='markers',
+            marker=dict(
+                size=4,
+                opacity=0.6,
+                color=sample_data['Au'],
+                colorscale='Viridis'
+            ),
+            name='Corrélation'
+        ),
+        row=2, col=2
+    )
+    
+    fig.update_layout(
+        height=600,
+        title_text="Analyse des Distances à la Shear Zone",
+        showlegend=False
+    )
+    
+    return fig
+
+def create_results_analysis_plot(results_df):
+    """Créer un graphique d'analyse des résultats"""
+    
+    if results_df is None or results_df.empty:
+        return None
+    
+    fig = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=(
+            'Distribution des Longueurs',
+            'Distribution des Teneurs Moyennes', 
+            'Grade × Longueur (Bubble Chart)',
+            'Efficacité du Regroupement'
+        ),
         specs=[[{"secondary_y": False}, {"secondary_y": False}],
                [{"secondary_y": False}, {"secondary_y": False}]]
     )
     
     # Distribution des longueurs
     fig.add_trace(
-        go.Histogram(x=intervals_df['Length'], nbinsx=20, name='Longueurs', opacity=0.7),
+        go.Histogram(x=results_df['Length'], nbinsx=20, name='Longueurs', opacity=0.7),
         row=1, col=1
     )
     
     # Distribution des teneurs
     fig.add_trace(
-        go.Histogram(x=intervals_df['AvgGrade'], nbinsx=20, name='Teneurs', opacity=0.7),
+        go.Histogram(x=results_df['AvgGrade'], nbinsx=20, name='Teneurs', opacity=0.7),
         row=1, col=2
     )
     
-    # Grade vs Longueur
+    # Grade × Longueur
     fig.add_trace(
         go.Scatter(
-            x=intervals_df['Length'],
-            y=intervals_df['AvgGrade'],
+            x=results_df['Length'],
+            y=results_df['AvgGrade'],
             mode='markers',
             marker=dict(
-                size=intervals_df['GradeXLength'] / 2,
-                color=intervals_df['GradeXLength'],
+                size=results_df['GradeXLength'] / 2,
+                color=results_df['GradeXLength'],
                 colorscale='Plasma',
-                showscale=True,
-                colorbar=dict(title="Grade×Longueur")
+                opacity=0.7,
+                sizemin=4
             ),
             name='G×L',
-            text=intervals_df['HoleID'],
+            text=results_df['HoleID'],
             hovertemplate='Forage: %{text}<br>Longueur: %{x:.1f}m<br>Teneur: %{y:.3f}g/t<br>G×L: %{marker.color:.2f}<extra></extra>'
         ),
         row=2, col=1
     )
     
-    # Qualité des intervalles
-    quality_categories = ['Excellent (G×L≥10)', 'Bon (G×L 5-10)', 'Modéré (G×L<5)']
-    quality_counts = [
-        len(intervals_df[intervals_df['GradeXLength'] >= 10]),
-        len(intervals_df[(intervals_df['GradeXLength'] >= 5) & (intervals_df['GradeXLength'] < 10)]),
-        len(intervals_df[intervals_df['GradeXLength'] < 5])
-    ]
+    # Efficacité du regroupement
+    regrouping_data = results_df.groupby('IntervalsBefore').size().reset_index()
+    regrouping_data.columns = ['IntervalsBefore', 'Count']
     
     fig.add_trace(
-        go.Bar(x=quality_categories, y=quality_counts, name='Qualité'),
+        go.Bar(
+            x=regrouping_data['IntervalsBefore'],
+            y=regrouping_data['Count'],
+            name='Regroupement',
+            hovertemplate='Intervalles Avant: %{x}<br>Nombre de Forages: %{y}<extra></extra>'
+        ),
         row=2, col=2
     )
     
     fig.update_layout(
         height=600,
-        title_text="Analyse des Intervalles Minéralisés",
+        title_text="Synthèse des Résultats d'Analyse",
         showlegend=False
     )
     
@@ -631,9 +807,10 @@ def main():
     # Header principal
     st.markdown("""
     <div class="main-header">
-        <h1>⛏️ Analyseur d'Intervalles Minéralisés avec Visualisation 3D</h1>
+        <h1>⛏️ Analyseur d'Intervalles Minéralisés</h1>
         <p><strong>Optimisation géologique pour Leapfrog Geo | Développé par Didier Ouedraogo, P.Geo</strong></p>
-        <p><em>Contraintes de distance ET dilution - Visualisation 3D interactive</em></p>
+        <p><em>Contraintes de distance ET dilution - Un intervalle par forage/shear zone</em></p>
+        <p><small>📍 Calcul automatique des distances perpendiculaires à la shear zone (N45°E, 75°SE)</small></p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -645,11 +822,20 @@ def main():
         st.markdown("### 🎯 Fonctionnalités")
         st.markdown("""
         - ✅ Import données CSV
-        - ✅ Mapping colonnes intelligent
-        - ✅ Visualisation 3D interactive
+        - ✅ Mapping colonnes intelligent  
+        - ✅ Calcul distances automatique
         - ✅ Analyse contraintes dilution
+        - ✅ Statistiques avancées
         - ✅ Export multi-format
-        - ✅ Mesh shear zone 3D
+        """)
+        
+        st.markdown("---")
+        st.markdown("### 📐 Shear Zone")
+        st.markdown("""
+        - **Strike:** N45°E  
+        - **Dip:** 75° vers SE
+        - **Centre:** E450000, N5550000, Z150m
+        - **Calcul:** Distance perpendiculaire
         """)
         
         st.markdown("---")
@@ -662,9 +848,9 @@ def main():
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📊 Import & Aperçu", 
         "🎛️ Mapping & Config", 
-        "🌐 Visualisation 3D", 
+        "📈 Statistiques & Graphiques", 
         "🔬 Analyse", 
-        "📈 Résultats & Export"
+        "📋 Résultats & Export"
     ])
 
     # ========================================
@@ -688,7 +874,7 @@ def main():
                 uploaded_file = st.file_uploader(
                     "Sélectionnez votre fichier CSV",
                     type=['csv'],
-                    help="Format attendu: HoleID, From, To, Au, Easting, Northing, Elevation"
+                    help="Colonnes requises: HoleID, From, To, Au. Optionnelles: Easting, Northing, Elevation"
                 )
                 
                 if uploaded_file is not None:
@@ -696,6 +882,7 @@ def main():
                     if samples_df is not None:
                         st.session_state.samples_df = samples_df
                         st.session_state.drillholes_df = None
+                        st.session_state.data_source = "imported"
                         st.success(f"✅ {len(samples_df):,} échantillons importés")
             
             else:
@@ -704,6 +891,7 @@ def main():
                         samples_df, drillholes_df = generate_demo_data()
                         st.session_state.samples_df = samples_df
                         st.session_state.drillholes_df = drillholes_df
+                        st.session_state.data_source = "demo"
                         st.success("✅ Données de démonstration générées!")
         
         with col2:
@@ -714,6 +902,18 @@ DDH-001,0,2,0.15,450100,5550200,245.5
 DDH-001,2,4,1.25,450102,5550198,244.2
 DDH-001,4,6,0.45,450104,5550196,243.1
             """, language="csv")
+            
+            st.markdown("---")
+            st.markdown("### ℹ️ Informations")
+            st.markdown("""
+            **Colonnes obligatoires:**
+            - HoleID, From, To, Au
+            
+            **Colonnes optionnelles:**
+            - Easting, Northing, Elevation
+            - Si présentes → calcul distance
+            - Si absentes → distance = 999m
+            """)
 
         # Aperçu des données
         if 'samples_df' in st.session_state:
@@ -732,32 +932,43 @@ DDH-001,4,6,0.45,450104,5550196,243.1
                 st.metric("📋 Colonnes", f"{len(df.columns)}")
             
             with col3:
-                unique_holes = df.iloc[:, 0].nunique() if len(df) > 0 else 0
+                unique_holes = df[df.columns[0]].nunique() if len(df) > 0 else 0
                 st.metric("🗺️ Forages", f"{unique_holes}")
             
             with col4:
-                if len(df.columns) > 3:
-                    try:
-                        numeric_col = df.select_dtypes(include=[np.number]).columns[0]
-                        avg_val = df[numeric_col].mean()
-                        st.metric("📈 Moyenne", f"{avg_val:.3f}")
-                    except:
-                        st.metric("📈 Status", "OK")
+                data_source = st.session_state.get('data_source', 'unknown')
+                source_label = "Demo" if data_source == "demo" else "Importé"
+                st.metric("📁 Source", source_label)
+
+            # Informations détaillées
+            if st.session_state.get('data_source') == 'demo':
+                st.markdown("""
+                <div class="info-box">
+                    <h4>📊 Données de Démonstration Générées</h4>
+                    <ul>
+                        <li><strong>100 forages</strong> optimisés pour intercepter la shear zone</li>
+                        <li><strong>5000+ échantillons</strong> avec positions 3D réalistes</li>
+                        <li><strong>Distances calculées</strong> automatiquement</li>
+                        <li><strong>Teneurs variables</strong> selon proximité shear zone</li>
+                    </ul>
+                </div>
+                """, unsafe_allow_html=True)
 
             # Aperçu du tableau
             st.subheader("📋 Tableau des Données (50 premières lignes)")
             st.dataframe(df.head(50), use_container_width=True, height=300)
             
             # Informations sur les colonnes
-            st.subheader("📊 Informations sur les Colonnes")
-            col_info = pd.DataFrame({
-                'Colonne': df.columns,
-                'Type': df.dtypes.astype(str),
-                'Non-Null': df.count(),
-                'Null': df.isnull().sum(),
-                'Exemples': [', '.join(map(str, df[col].dropna().unique()[:3])) for col in df.columns]
-            })
-            st.dataframe(col_info, use_container_width=True)
+            with st.expander("📊 Informations Détaillées sur les Colonnes"):
+                col_info = pd.DataFrame({
+                    'Colonne': df.columns,
+                    'Type': df.dtypes.astype(str),
+                    'Non-Null': df.count(),
+                    'Null': df.isnull().sum(),
+                    'Unique': [df[col].nunique() for col in df.columns],
+                    'Exemples': [', '.join(map(str, df[col].dropna().unique()[:3])) for col in df.columns]
+                })
+                st.dataframe(col_info, use_container_width=True)
 
     # ========================================
     # TAB 2: MAPPING ET CONFIGURATION
@@ -792,9 +1003,9 @@ DDH-001,4,6,0.45,450104,5550196,243.1
                 'From': ('Profondeur Début*', 'Profondeur de début en mètres'),
                 'To': ('Profondeur Fin*', 'Profondeur de fin en mètres'),
                 'Au': ('Teneur Or*', 'Teneur en or (g/t)'),
-                'Easting': ('Coordonnée Est', 'Coordonnée X (optionnel)'),
-                'Northing': ('Coordonnée Nord', 'Coordonnée Y (optionnel)'),
-                'Elevation': ('Élévation', 'Élévation Z (optionnel)')
+                'Easting': ('Coordonnée Est', 'Coordonnée X pour calcul distance'),
+                'Northing': ('Coordonnée Nord', 'Coordonnée Y pour calcul distance'),
+                'Elevation': ('Élévation', 'Élévation Z pour calcul distance')
             }
             
             for field, (label, description) in field_definitions.items():
@@ -820,6 +1031,12 @@ DDH-001,4,6,0.45,450104,5550196,243.1
                 st.markdown('<div class="success-box">', unsafe_allow_html=True)
                 st.success("✅ Mapping validé avec succès!")
                 st.markdown('</div>', unsafe_allow_html=True)
+                
+                # Calculer les distances si nécessaire
+                if st.button("📍 Calculer Distances à la Shear Zone"):
+                    df_with_distances, has_coords = calculate_distances_if_needed(df, mapping)
+                    st.session_state.samples_df = df_with_distances
+                    st.session_state.has_coordinates = has_coords
 
         with col2:
             st.subheader("⚙️ Configuration des Paramètres")
@@ -862,13 +1079,22 @@ DDH-001,4,6,0.45,450104,5550196,243.1
             
             # Résumé de la configuration
             st.markdown("#### 📋 Résumé Configuration")
-            st.json(config)
+            config_display = {
+                "Teneur de coupure": f"{config['cutoff_grade']} g/t",
+                "Longueur minimale": f"{config['min_length']} m",
+                "Échantillons minimum": f"{config['min_samples']}",
+                "Distance max shear": f"{config['max_distance']} m",
+                "Dilution maximale": f"{config['max_dilution']} m"
+            }
+            
+            for key, value in config_display.items():
+                st.write(f"**{key}:** {value}")
 
     # ========================================
-    # TAB 3: VISUALISATION 3D
+    # TAB 3: STATISTIQUES ET GRAPHIQUES
     # ========================================
     with tab3:
-        st.header("🌐 Visualisation 3D Interactive")
+        st.header("📈 Statistiques et Graphiques")
         
         if 'samples_df' not in st.session_state:
             st.warning("⚠️ Veuillez d'abord importer des données")
@@ -881,98 +1107,123 @@ DDH-001,4,6,0.45,450104,5550196,243.1
         df = st.session_state.samples_df
         mapping = st.session_state.column_mapping
         
-        # Vérifier si les coordonnées 3D sont disponibles
-        has_3d_coords = all(mapping.get(col) for col in ['Easting', 'Northing', 'Elevation'])
+        # Statistiques générales
+        st.subheader("📊 Statistiques Générales")
         
-        if not has_3d_coords:
-            st.warning("⚠️ Coordonnées 3D manquantes. Veuillez mapper les colonnes Easting, Northing et Elevation.")
-            return
-        
-        # Contrôles de visualisation
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            color_by = st.selectbox(
-                "🎨 Coloration par:",
-                ['grade', 'distance', 'hole'],
-                format_func=lambda x: {
-                    'grade': 'Teneur Au',
-                    'distance': 'Distance Shear',
-                    'hole': 'Forage'
-                }[x]
-            )
-        
-        with col2:
-            show_mesh = st.checkbox("🗂️ Afficher Shear Zone", value=True)
-        
-        with col3:
-            show_intervals = st.checkbox("📍 Afficher Intervalles", value=False)
-        
-        with col4:
-            sample_size = st.selectbox(
-                "📊 Échantillons à afficher:",
-                [500, 1000, 2000, "Tous"],
-                index=1
-            )
-        
-        # Préparer les données pour la visualisation
-        plot_df = df.copy()
-        if sample_size != "Tous":
-            plot_df = plot_df.sample(min(sample_size, len(plot_df)))
-        
-        # Créer la visualisation 3D
-        intervals_df = st.session_state.get('analysis_results', None) if show_intervals else None
-        
-        try:
-            fig_3d = create_3d_scatter_plot(
-                plot_df, mapping, color_by, show_mesh, intervals_df
-            )
+        if mapping.get('Au'):
+            grades = pd.to_numeric(df[mapping['Au']], errors='coerce').dropna()
             
-            if fig_3d:
-                st.plotly_chart(fig_3d, use_container_width=True)
-                
-                # Informations sur la visualisation
-                st.markdown("---")
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.metric("📊 Points Affichés", f"{len(plot_df):,}")
-                
-                with col2:
-                    if mapping.get('Au'):
-                        grades = pd.to_numeric(plot_df[mapping['Au']], errors='coerce').dropna()
-                        st.metric("💰 Teneur Moyenne", f"{grades.mean():.3f} g/t")
-                
-                with col3:
-                    if show_mesh:
-                        st.metric("🗂️ Mesh Shear Zone", "Affiché")
-                    else:
-                        st.metric("🗂️ Mesh Shear Zone", "Masqué")
-                
-                # Légende et explications
-                with st.expander("ℹ️ Guide de la Visualisation 3D"):
-                    st.markdown("""
-                    ### 🎨 Code Couleur
-                    - **Par Teneur**: Violet (faible) → Jaune (élevé)
-                    - **Par Distance**: Bleu (proche shear) → Rouge (éloigné)
-                    - **Par Forage**: Couleur unique par forage
-                    
-                    ### 🗂️ Éléments Affichés
-                    - **Points orange**: Mesh de la shear zone (N45°E, 75°SE)
-                    - **Points colorés**: Échantillons (taille = teneur)
-                    - **Lignes rouges**: Intervalles minéralisés (si activé)
-                    
-                    ### 🎛️ Contrôles
-                    - **Rotation**: Clic + glissement
-                    - **Zoom**: Molette de la souris
-                    - **Pan**: Shift + clic + glissement
-                    """)
+            col1, col2, col3, col4, col5, col6 = st.columns(6)
             
-            else:
-                st.error("❌ Impossible de créer la visualisation 3D")
+            with col1:
+                st.metric("📊 Échantillons", f"{len(grades):,}")
+            
+            with col2:
+                st.metric("💰 Teneur Min", f"{grades.min():.3f} g/t")
+            
+            with col3:
+                st.metric("📈 Teneur Moy", f"{grades.mean():.3f} g/t")
+            
+            with col4:
+                st.metric("📊 Médiane", f"{grades.median():.3f} g/t")
+            
+            with col5:
+                st.metric("🔺 P95", f"{grades.quantile(0.95):.3f} g/t")
+            
+            with col6:
+                st.metric("🎯 Teneur Max", f"{grades.max():.3f} g/t")
+            
+            # Statistiques par seuils
+            st.markdown("---")
+            st.subheader("🎯 Statistiques par Seuils de Teneur")
+            
+            thresholds = [0.5, 1.0, 2.0, 5.0]
+            threshold_stats = []
+            
+            for threshold in thresholds:
+                count = len(grades[grades >= threshold])
+                percentage = (count / len(grades)) * 100 if len(grades) > 0 else 0
+                threshold_stats.append({
+                    'Seuil (g/t)': f"≥ {threshold}",
+                    'Échantillons': count,
+                    'Pourcentage': f"{percentage:.1f}%"
+                })
+            
+            threshold_df = pd.DataFrame(threshold_stats)
+            st.dataframe(threshold_df, use_container_width=True)
+        
+        # Graphiques de distribution
+        st.markdown("---")
+        st.subheader("📈 Analyse Graphique des Teneurs")
+        
+        fig_dist = create_grade_distribution_plot(df, mapping)
+        if fig_dist:
+            st.plotly_chart(fig_dist, use_container_width=True)
+        
+        # Analyse des distances (si disponible)
+        if 'DistanceToShear' in df.columns:
+            st.markdown("---")
+            st.subheader("📍 Analyse des Distances à la Shear Zone")
+            
+            distances = df['DistanceToShear'].dropna()
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("📍 Distance Min", f"{distances.min():.1f} m")
+            
+            with col2:
+                st.metric("📊 Distance Moy", f"{distances.mean():.1f} m")
+            
+            with col3:
+                st.metric("📈 Médiane", f"{distances.median():.1f} m")
+            
+            with col4:
+                st.metric("🎯 Distance Max", f"{distances.max():.1f} m")
+            
+            # Statistiques par zones de distance
+            st.markdown("#### 🏷️ Répartition par Zones de Distance")
+            
+            zone_stats = []
+            zones = [
+                ("Très proche", 0, 5),
+                ("Proche", 5, 15),
+                ("Modéré", 15, 30),
+                ("Éloigné", 30, float('inf'))
+            ]
+            
+            for zone_name, min_dist, max_dist in zones:
+                if max_dist == float('inf'):
+                    zone_samples = distances[distances >= min_dist]
+                else:
+                    zone_samples = distances[(distances >= min_dist) & (distances < max_dist)]
                 
-        except Exception as e:
-            st.error(f"❌ Erreur lors de la création de la visualisation: {str(e)}")
+                count = len(zone_samples)
+                percentage = (count / len(distances)) * 100 if len(distances) > 0 else 0
+                
+                # Teneur moyenne dans cette zone
+                if mapping.get('Au'):
+                    zone_mask = df['DistanceToShear'].between(min_dist, max_dist if max_dist != float('inf') else df['DistanceToShear'].max())
+                    zone_grades = pd.to_numeric(df[zone_mask][mapping['Au']], errors='coerce').dropna()
+                    avg_grade = zone_grades.mean() if len(zone_grades) > 0 else 0
+                else:
+                    avg_grade = 0
+                
+                zone_stats.append({
+                    'Zone': zone_name,
+                    'Distance (m)': f"{min_dist}-{max_dist if max_dist != float('inf') else '∞'}",
+                    'Échantillons': count,
+                    'Pourcentage': f"{percentage:.1f}%",
+                    'Teneur Moy (g/t)': f"{avg_grade:.3f}"
+                })
+            
+            zone_df = pd.DataFrame(zone_stats)
+            st.dataframe(zone_df, use_container_width=True)
+            
+            # Graphique des distances
+            fig_distance = create_distance_analysis_plot(df)
+            if fig_distance:
+                st.plotly_chart(fig_distance, use_container_width=True)
 
     # ========================================
     # TAB 4: ANALYSE
@@ -1018,18 +1269,50 @@ DDH-001,4,6,0.45,450104,5550196,243.1
         # Statistiques pré-analyse
         st.subheader("📊 Statistiques Pré-Analyse")
         
-        if mapping.get('Au'):
-            grades = pd.to_numeric(df[mapping['Au']], errors='coerce').dropna()
+        # Préparer les données d'analyse
+        analysis_df = df.copy()
+        
+        # S'assurer que les distances sont calculées
+        if 'DistanceToShear' not in analysis_df.columns:
+            if all(mapping.get(field) for field in ['Easting', 'Northing', 'Elevation']):
+                analysis_df, _ = calculate_distances_if_needed(analysis_df, mapping)
+                st.session_state.samples_df = analysis_df
+            else:
+                analysis_df['DistanceToShear'] = 999
+        
+        # Renommer les colonnes selon le mapping
+        column_rename = {v: k for k, v in mapping.items() if v}
+        analysis_df = analysis_df.rename(columns=column_rename)
+        
+        # Convertir en numérique
+        numeric_cols = ['From', 'To', 'Au']
+        for col in numeric_cols:
+            if col in analysis_df.columns:
+                analysis_df[col] = pd.to_numeric(analysis_df[col], errors='coerce')
+        
+        if 'Au' in analysis_df.columns:
+            grades = analysis_df['Au'].dropna()
             above_cutoff = len(grades[grades >= config['cutoff_grade']])
             
-            col1, col2, col3 = st.columns(3)
+            if 'DistanceToShear' in analysis_df.columns:
+                close_to_shear = len(analysis_df[analysis_df['DistanceToShear'] <= config['max_distance']])
+                valid_samples = len(analysis_df[
+                    (analysis_df['Au'] >= config['cutoff_grade']) & 
+                    (analysis_df['DistanceToShear'] <= config['max_distance'])
+                ])
+            else:
+                close_to_shear = len(analysis_df)
+                valid_samples = above_cutoff
+            
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("📈 Total Échantillons", f"{len(grades):,}")
             with col2:
                 st.metric("💰 > Teneur Coupure", f"{above_cutoff:,}")
             with col3:
-                percentage = (above_cutoff / len(grades)) * 100 if len(grades) > 0 else 0
-                st.metric("📊 Pourcentage", f"{percentage:.1f}%")
+                st.metric("📍 Proches Shear Zone", f"{close_to_shear:,}")
+            with col4:
+                st.metric("✅ Critères Combinés", f"{valid_samples:,}")
         
         # Bouton d'analyse
         st.markdown("---")
@@ -1040,25 +1323,47 @@ DDH-001,4,6,0.45,450104,5550196,243.1
             if st.button("🚀 Lancer l'Analyse Complète", type="primary", use_container_width=True):
                 with st.spinner("Analyse en cours..."):
                     try:
-                        # Ajouter une barre de progression
+                        # Barre de progression
                         progress_bar = st.progress(0)
                         status_text = st.empty()
                         
-                        status_text.text("Préparation des données...")
-                        progress_bar.progress(25)
+                        status_text.text("📊 Préparation des données...")
+                        progress_bar.progress(20)
                         
-                        status_text.text("Application des critères...")
-                        progress_bar.progress(50)
+                        status_text.text("🔍 Identification des intervalles potentiels...")
+                        progress_bar.progress(40)
                         
-                        results_df = run_mineral_analysis(df, mapping, config)
+                        # Calculer les intervalles potentiels
+                        potential_intervals = calculate_mineral_intervals(analysis_df, config)
                         
-                        status_text.text("Génération des résultats...")
-                        progress_bar.progress(75)
+                        status_text.text("🔥 Application des contraintes de dilution...")
+                        progress_bar.progress(60)
                         
-                        st.session_state.analysis_results = results_df
+                        # Appliquer les contraintes de dilution
+                        final_intervals = apply_dilution_constraints(
+                            potential_intervals, 
+                            analysis_df, 
+                            config['max_dilution']
+                        )
                         
-                        status_text.text("Analyse terminée!")
+                        status_text.text("✅ Finalisation des résultats...")
+                        progress_bar.progress(80)
+                        
+                        # Validation finale
+                        validated_intervals = final_intervals[
+                            (final_intervals['Length'] >= config['min_length']) &
+                            (final_intervals['AvgGrade'] >= config['cutoff_grade']) &
+                            (final_intervals['SampleCount'] >= config['min_samples'])
+                        ].copy()
+                        
+                        # Réindexer
+                        validated_intervals.reset_index(drop=True, inplace=True)
+                        validated_intervals['IntervalID'] = range(1, len(validated_intervals) + 1)
+                        
+                        st.session_state.analysis_results = validated_intervals
+                        
                         progress_bar.progress(100)
+                        status_text.text("🎉 Analyse terminée!")
                         
                         # Nettoyer l'interface
                         import time
@@ -1066,20 +1371,16 @@ DDH-001,4,6,0.45,450104,5550196,243.1
                         progress_bar.empty()
                         status_text.empty()
                         
-                        if len(results_df) > 0:
-                            st.success(f"✅ Analyse terminée! {len(results_df)} intervalles trouvés.")
+                        if len(validated_intervals) > 0:
+                            st.success(f"✅ Analyse terminée! {len(validated_intervals)} intervalles trouvés.")
                         else:
-                            st.warning("⚠️ Aucun intervalle trouvé avec les critères actuels.")
+                            st.warning("⚠️ Aucun intervalle ne respecte les contraintes définies.")
                             
                     except Exception as e:
                         st.error(f"❌ Erreur lors de l'analyse: {str(e)}")
-        
-        with col2:
-            if st.button("📊 Graphiques de Distribution", use_container_width=True):
-                fig_dist = create_grade_distribution_plot(df, mapping)
-                if fig_dist:
-                    st.plotly_chart(fig_dist, use_container_width=True)
-        
+                        progress_bar.empty()
+                        status_text.empty()
+
         # Afficher les résultats si disponibles
         if 'analysis_results' in st.session_state:
             results_df = st.session_state.analysis_results
@@ -1109,30 +1410,21 @@ DDH-001,4,6,0.45,450104,5550196,243.1
                 # Tableau des résultats
                 st.subheader("📋 Détail des Intervalles")
                 st.dataframe(
-                    results_df,
+                    results_df.round(3),
                     use_container_width=True,
-                    height=300,
-                    column_config={
-                        "AvgGrade": st.column_config.NumberColumn(
-                            "Teneur Moy (g/t)",
-                            format="%.3f"
-                        ),
-                        "Length": st.column_config.NumberColumn(
-                            "Longueur (m)",
-                            format="%.2f"
-                        ),
-                        "GradeXLength": st.column_config.NumberColumn(
-                            "Grade×Longueur",
-                            format="%.2f"
-                        )
-                    }
+                    height=300
                 )
+                
+                # Graphique d'analyse des résultats
+                fig_results = create_results_analysis_plot(results_df)
+                if fig_results:
+                    st.plotly_chart(fig_results, use_container_width=True)
 
     # ========================================
     # TAB 5: RÉSULTATS ET EXPORT
     # ========================================
     with tab5:
-        st.header("📈 Résultats et Export")
+        st.header("📋 Résultats et Export")
         
         if 'analysis_results' not in st.session_state:
             st.warning("⚠️ Aucune analyse effectuée. Veuillez lancer l'analyse dans l'onglet précédent.")
@@ -1182,13 +1474,6 @@ DDH-001,4,6,0.45,450104,5550196,243.1
                 delta="Potentiel économique"
             )
         
-        # Graphiques d'analyse
-        st.subheader("📈 Analyse des Résultats")
-        
-        fig_analysis = create_intervals_analysis_plot(results_df)
-        if fig_analysis:
-            st.plotly_chart(fig_analysis, use_container_width=True)
-        
         # Options d'export
         st.markdown("---")
         st.subheader("💾 Options d'Export")
@@ -1223,7 +1508,9 @@ DDH-001,4,6,0.45,450104,5550196,243.1
                             'Échantillons Min',
                             'Distance Max (m)',
                             'Dilution Max (m)',
-                            'Intervalles Trouvés'
+                            'Intervalles Trouvés',
+                            'Shear Zone Strike',
+                            'Shear Zone Dip'
                         ],
                         'Valeur': [
                             datetime.now().strftime('%Y-%m-%d %H:%M'),
@@ -1232,7 +1519,9 @@ DDH-001,4,6,0.45,450104,5550196,243.1
                             config['min_samples'],
                             config['max_distance'],
                             config['max_dilution'],
-                            len(results_df)
+                            len(results_df),
+                            'N45°E',
+                            '75° SE'
                         ]
                     })
                     metadata.to_excel(writer, sheet_name='Métadonnées', index=False)
@@ -1268,16 +1557,16 @@ DDH-001,4,6,0.45,450104,5550196,243.1
                 use_container_width=True
             )
         
-        # Tableau détaillé final
+        # Tableau détaillé final avec filtres
         st.markdown("---")
-        st.subheader("📋 Tableau Détaillé Final")
+        st.subheader("📋 Tableau Détaillé avec Filtres")
         
-        # Ajout de filtres pour le tableau
+        # Filtres
         col1, col2, col3 = st.columns(3)
         
         with col1:
             min_grade_filter = st.slider(
-                "Teneur minimum pour affichage:",
+                "Teneur minimum:",
                 min_value=0.0,
                 max_value=float(results_df['AvgGrade'].max()),
                 value=0.0,
@@ -1286,7 +1575,7 @@ DDH-001,4,6,0.45,450104,5550196,243.1
         
         with col2:
             min_length_filter = st.slider(
-                "Longueur minimum pour affichage:",
+                "Longueur minimum:",
                 min_value=0.0,
                 max_value=float(results_df['Length'].max()),
                 value=0.0,
@@ -1307,23 +1596,7 @@ DDH-001,4,6,0.45,450104,5550196,243.1
             (results_df['HoleID'].isin(holes_filter))
         ]
         
-        st.dataframe(
-            filtered_df,
-            use_container_width=True,
-            height=400,
-            column_config={
-                "IntervalID": st.column_config.NumberColumn("ID"),
-                "HoleID": st.column_config.TextColumn("Forage"),
-                "From": st.column_config.NumberColumn("De (m)", format="%.1f"),
-                "To": st.column_config.NumberColumn("À (m)", format="%.1f"),
-                "Length": st.column_config.NumberColumn("Longueur (m)", format="%.2f"),
-                "AvgGrade": st.column_config.NumberColumn("Teneur Moy (g/t)", format="%.3f"),
-                "MaxGrade": st.column_config.NumberColumn("Teneur Max (g/t)", format="%.3f"),
-                "SampleCount": st.column_config.NumberColumn("Échantillons"),
-                "GradeXLength": st.column_config.NumberColumn("Grade×Longueur", format="%.2f"),
-                "AvgDistance": st.column_config.NumberColumn("Distance Moy (m)", format="%.2f")
-            }
-        )
+        st.dataframe(filtered_df.round(3), use_container_width=True, height=400)
         
         # Statistiques finales
         st.markdown("---")
@@ -1342,9 +1615,9 @@ DDH-001,4,6,0.45,450104,5550196,243.1
                 'Qualité': ['Excellent (G×L≥10)', 'Bon (5≤G×L<10)', 'Modéré (G×L<5)'],
                 'Nombre': [excellent, bon, modere],
                 'Pourcentage': [
-                    excellent/len(filtered_df)*100 if len(filtered_df) > 0 else 0,
-                    bon/len(filtered_df)*100 if len(filtered_df) > 0 else 0,
-                    modere/len(filtered_df)*100 if len(filtered_df) > 0 else 0
+                    f"{excellent/len(filtered_df)*100:.1f}%" if len(filtered_df) > 0 else "0%",
+                    f"{bon/len(filtered_df)*100:.1f}%" if len(filtered_df) > 0 else "0%",
+                    f"{modere/len(filtered_df)*100:.1f}%" if len(filtered_df) > 0 else "0%"
                 ]
             })
             
@@ -1361,16 +1634,33 @@ DDH-001,4,6,0.45,450104,5550196,243.1
                 'Longueur': ['Court (<5m)', 'Moyen (5-10m)', 'Long (≥10m)'],
                 'Nombre': [court, moyen, long],
                 'Pourcentage': [
-                    court/len(filtered_df)*100 if len(filtered_df) > 0 else 0,
-                    moyen/len(filtered_df)*100 if len(filtered_df) > 0 else 0,
-                    long/len(filtered_df)*100 if len(filtered_df) > 0 else 0
+                    f"{court/len(filtered_df)*100:.1f}%" if len(filtered_df) > 0 else "0%",
+                    f"{moyen/len(filtered_df)*100:.1f}%" if len(filtered_df) > 0 else "0%",
+                    f"{long/len(filtered_df)*100:.1f}%" if len(filtered_df) > 0 else "0%"
                 ]
             })
             
             st.dataframe(length_data, use_container_width=True)
+        
+        # Information sur l'efficacité du regroupement
+        if 'IntervalsBefore' in results_df.columns:
+            st.markdown("---")
+            st.subheader("🔄 Efficacité du Regroupement")
+            
+            regrouped = len(results_df[results_df['IntervalsBefore'] > 1])
+            single = len(results_df[results_df['IntervalsBefore'] == 1])
+            
+            st.markdown(f"""
+            <div class="info-box">
+                <h4>📊 Résumé du Regroupement</h4>
+                <ul>
+                    <li><strong>{single} forages</strong> avec un seul intervalle</li>
+                    <li><strong>{regrouped} forages</strong> avec intervalles regroupés</li>
+                    <li><strong>Taux de regroupement:</strong> {regrouped/len(results_df)*100:.1f}%</li>
+                    <li><strong>Règle appliquée:</strong> Un intervalle par forage/shear zone</li>
+                </ul>
+            </div>
+            """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
-    # Import des modules nécessaires
-    import re
-    
     main()
